@@ -1,0 +1,333 @@
+# Metode Deployment OpenStack
+
+Untuk mendapatkan/mencoba fitur-fitur yang ada dalam OpenStack dapat dilakukan dengan beberapa cara, diantaranya :
+* Public Cloud, sejumlah penyedia jasa layanan di internet telah menyediakan layanan infrastruktur cloud berbasis OpenStack yang dapat diakses/disewa oleh publik, beberapa diantaranya Cloudwatt, DreamCompute, eNoCloud, HP, Rackspace, Amazon.
+* Local Development environment, dengan menggunakan aplikasi/script yang otomatis akan menyiapkan paket-paket aplikasi dan konfigurasi yang dibutuhkan untuk menjalankan fitur-fitur OpenStack di komputer/virtual machine pribadi. Beberapa diantaranya [Devstack](http://devstack.org),  dan [RDO](https://openstack.redhat.com/)
+* Distribution based OpenStack, dengan menggunakan paket-paket terintegrasi yang disediakan beberapa distro OS seperti di Fedora, Redhat, Ubuntu, Stackops, dll.
+* Build from scratch, dengan melakukan instalasi dan konfigurasi paket-paket yang dibutuhkan pada OS yang sudah terinstall di komputer/virtual machine, mengikuti petunjuk yang terdapat di [dokumentasi OpenStack](docs.openstack.org)
+
+#Metode Deployment OpenStack menggunakan Devstack
+Devstack merupakan kumpulan script yang dapat digunakan developer untuk mencoba fitur-fitur OpenStack di lingkungan komputer/VM lokal. Devstack hanya dirancang sebagai metode untuk mencoba OpenStack untuk keperluan development, sehingga tidak disarankan untuk keperluan produksi. Devstack akan menginstal paket-paket/aplikasi yang dibutuhkan untuk menjalankan aplikasi-aplikasi OpenStack sesuai konfigurasi yang terdapat dalam file konfigurasi Devstack (localrc atau local.conf). File konfigurasi localrc/local.conf berisikan nama-nama paket yang harus diinstal berikut konfigurasi OpenStack.
+
+Dalam tutorial ini kita akan mencoba implementasi OpenStack (versi Icehouse) dengan menggunakan Devstack dengan konfigurasi all-in-one (AIO). Dalam konfigurasi all-in-one ini seluruh fitur OpenStack diinstall dalam 1 server. Dalam devstack AIO ini akan dijalankan service :
+* Identity (Keystone)
+* Compute (Nova)
+* Network (Neutron)
+* Object Storage (Swift)
+* Image (Glance)
+* Block Storage (Cinder)
+* Dashboard (Horizon)
+
+Dalam devstack AIO ini pula virtual machine/instance akan dijalankan (emulasi default menggunakan QEMU), sehingga dibutuhkan resource komputer/VM yang memadai. Dari pengalaman, setidaknya dibutuhkan komputer/VM dengan spesifikasi :
+* CPU dual core @1.6GHz,
+* RAM 8GB
+* HD 100GB
+* 1 x Gigabit Ethernet card
+
+##Persiapan Instalasi
+Beberapa persiapan yang perlu dilakukan untuk menginstal devstack diantaranya :
+* Komputer/VM yang sudah terinstal OS yang disupport oleh devstack seperti fedora, redhat, centOS dan varian ubuntu. Pada tutorial ini, penulis menggunakan OS Ubuntu 14.04  sebagai host devstack AIO.
+* Jika menggunakan OS berbasis redhat/fedora/centOS, pastikan selinux dalam keadaan permissive/disabled
+```
+setenforce 0
+sed -i "/SELINUX=enforcing/c\SELINUX=disabled" /etc/selinux/config
+```
+* informasi network interface yang digunakan :
+
+| NIC name | IP Address | Port link type | Fungsi |
+| -- | -- | -- | -- |
+| eth0 | 10.10.10.20/16 | access | IP Management |
+| eth1 | 192.168.65.61/25 | access | VM external access |
+File konfigurasi /etc/network/interfaces-nya sebagai berikut :
+```
+auto eth0
+iface eth0 inet static
+        address 10.10.10.20
+        netmask 255.255.0.0
+        gateway 10.10.0.1
+auto eth1
+iface eth1 inet static
+        address 167.205.65.61
+        netmask 255.255.255.128
+        dns-nameservers 167.205.22.123
+        network 167.205.65.0
+        broadcast 167.205.65.127
+up route add -net 167.205.0.0/16 gw 167.205.65.5 dev eth1
+```
+* Konfigurasi network tenant OpenStack yang penulis pakai adalah local (karena hanya menggunakan 1 node), dengan menggunakan OpenVSwitch (OVS), dengan bridge bernama br-ex akan dihubungkan ke port eth1.
+
+##Instalasi Devstack
+Source code devstack tersedia lewat [github](https://github.com/openstack-dev/devstack.git) karena itu dibutuhkan OS yang sudah terinstal paket git
+
+```
+sudo apt-get install git
+```
+Clone source code devstack dari github dan pastikan branch-nya icehouse
+```
+git clone https://git.openstack.org/openstack-dev/devstack
+```
+Devstack tidak dapat dijalankan oleh user root, sehingga membutuhkan user non-root yang dapat mengakses perintah sudo. Devstack telah menyediakan script untuk membuat user bernama 'stack' dengan home directory '/opt/stack'
+```
+devstack/tools/create-stack-user.sh
+su stack
+cd ~stack
+git clone https://github.com/openstack-dev/devstack.git -b stable/icehouse devstack/
+```
+Devstack juga dapat dijalankan oleh user lain, pastikan user tersebut dapat mengakses sudo
+```
+echo 'username ALL=(ALL) 	ALL' >> /etc/sudoers
+```
+File local.conf yang digunakan sebagai berikut :
+```
+[[local|localrc]]
+HOST_IP=10.10.10.20
+
+#CREDENTIAL
+ADMIN_PASSWORD=devstack
+MYSQL_PASSWORD=devstack
+RABBIT_PASSWORD=devstack
+SERVICE_PASSWORD=devstack
+SERVICE_TOKEN=devstack
+SWIFT_HASH=devstack
+
+# Neutron OVS (flat)
+Q_PLUGIN=ml2
+Q_AGENT_EXTRA_OVS_OPTS=(tenant_network_type=local)
+Q_ML2_PLUGIN_TYPE_DRIVERS=local,flat,vlan,vxlan,gre
+Q_AGENT_EXTRA_OVS_OPTS=(network_vlan_ranges=physnet1)
+OVS_VLAN_RANGE=physnet1
+PHYSICAL_NETWORK=physnet1
+OVS_PHYSICAL_BRIDGE=br-ex
+
+# Images
+# Use this image when creating test instances
+IMAGE_URLS+=",http://cdn.download.cirros-cloud.net/0.3.2/cirros-0.3.2-x86_64-disk.img"
+
+# Services
+ENABLED_SERVICES=rabbit,mysql,key
+ENABLED_SERVICES+=,n-api,n-crt,n-obj,n-cpu,n-cond,n-sch,n-novnc,n-cauth
+ENABLED_SERVICES+=,neutron,q-svc,q-agt,q-dhcp,q-l3,q-meta,q-lbaas
+ENABLED_SERVICES+=,s-proxy,s-object,s-container,s-account
+ENABLED_SERVICES+=,g-api,g-reg
+ENABLED_SERVICES+=,cinder,c-api,c-vol,c-sch,c-bak
+ENABLED_SERVICES+=,horizon
+
+# Enable Logging
+LOGFILE=/opt/stack/logs/stack.sh.log
+VERBOSE=True
+LOG_COLOR=True
+SCREEN_LOGDIR=/opt/stack/logs
+devstack/local.conf (END)
+```
+Kemudian mulai deploy devstack
+```
+cd ~stack/devstack
+./stack.sh
+```
+Script yang dieksekusi di atas akan menginstal & mengonfigurasi paket-paket yang dibutuhkan dan menghasilkan serentet output, hingga akhirnya memunculkan pesan seperti berikut :
+```
+... lots of output ...
+
+Horizon is now available at http://10.10.10.20
+Keystone is serving at http://10.10.10.20:5000/v2.0/
+Examples on using novaclient command line is in exercise.sh
+The default users are: admin and demo
+The password: devstack
+This is your host ip: 10.10.10.20
+2014-12-6 18:10:10.739 | stack.sh completed in 583 seconds.
+```
+Sampai tahap ini paket-paket OpenStack sudah terinstal semua sesuai dengan konfigurasi di file local.conf dan halaman manajemen OpenStack dengan menggunakan Horizon sudah dapat diakses di url http://10.10.10.20 dengan user dan password admin | devstack dan dapat mulai melakukan beberapa operasi seperti meluncurkan instance/virtual machine. Namun pada tahap ini, instance belum dapat terhubung ke luar karena diperlukan tahapan-tahapan pasca-instalasi sebagai berikut.
+## Pasca Instalasi Devstack
+### Periksa status service-service OpenStack
+Untuk memeriksa status service openstack gunakan perintah :
+```
+source ~stack/devstack/openrc admin admin
+nova service-list
+
++----+------------------+----------+----------+---------+-------+----------------------------+-----------------+
+| Id | Binary           | Host     | Zone     | Status  | State | Updated_at                 | Disabled Reason |
++----+------------------+----------+----------+---------+-------+----------------------------+-----------------+
+| 1  | nova-conductor   | devstack | internal | enabled | up    | 2014-12-06T12:18:43.000000 | -               |
+| 2  | nova-cert        | devstack | internal | enabled | up    | 2014-12-06T12:18:37.000000 | -               |
+| 3  | nova-scheduler   | devstack | internal | enabled | up    | 2014-12-06T12:18:40.000000 | -               |
+| 4  | nova-compute     | devstack | nova     | enabled | up    | 2014-12-06T12:18:38.000000 | -               |
+| 5  | nova-consoleauth | devstack | internal | enabled | up    | 2014-12-06T12:18:36.000000 | -               |
++----+------------------+----------+----------+---------+-------+----------------------------+-----------------+
+
+```
+Pastikan status service-service di atas enabled. Di sisi jaringan, cek service neutron berjalan menggunakan perintah :
+```
+source ~stack/devstack/openrc admin admin
+neutron agent-list
+
++--------------------------------------+--------------------+----------+-------+----------------+---------------------------+
+| id                                   | agent_type         | host     | alive | admin_state_up | binary                    |
++--------------------------------------+--------------------+----------+-------+----------------+---------------------------+
+| 00ce5497-724c-4c17-9f24-8755ee73fc18 | L3 agent           | devstack | :-)   | True           | neutron-l3-agent          |
+| 29ee080e-bc4f-4641-aa23-91e8d124a0b2 | Metadata agent     | devstack | :-)   | True           | neutron-metadata-agent    |
+| 5039faeb-5a32-493b-8796-7c017fd51a39 | Open vSwitch agent | devstack | :-)   | True           | neutron-openvswitch-agent |
+| 670702db-21a2-4644-80de-8c4166054b64 | DHCP agent         | devstack | :-)   | True           | neutron-dhcp-agent        |
+| 93aed8d7-c256-4c7c-aae3-3141dad50628 | Loadbalancer agent | devstack | :-)   | True           | neutron-lbaas-agent       |
++--------------------------------------+--------------------+----------+-------+----------------+---------------------------+
+```
+### Menghubungkan Devstack ke network existing
+Setelah proses instalasi devstack selesai, sebenarnya devstack telah membuat konfigurasi jaringan di OpenStack sendiri yakni network Public (172.16.0.0/16) dan network private (10.0.0.0/16) dan membuat router bernama router1, akan tetapi topologi network yang penulis inginkan sebagai berikut :
+
+| Network Name | Network | IP Allocation | Network Type | IP Membership |
+| -- | -- | -- | -- | -- |
+| public | 167.205.65.0/25 | 167.205.65.110-115 | Floating | static |
+| private | 192.168.1.0/24 | 192.168.0.2-40 | Fixed | dhcp |
+
+Maka sebelumnya kita harus menghapus terlebih dahulu konfigurasi router dan network yang ada di devstack melalui web interface Horizon. Pada saat tulisan ini dibuat, sepertinya masih ada bug di neutron sehingga konfigurasi network dan router yang dibuat oleh devstack tidak dapat dihapus lewat command line.
+
+Setelah konfigurasi network devstack existing dihapus, kita tambahkan konfigurasi network dan router sesuai yang kita inginkan
+```
+source devstack/openrc admin admin
+neutron router-create router1
+neutron net-create private
+neutron subnet-create private 192.168.1.0/24 --name private_subnet --enable-dhcp --gateway 192.168.1.1 --dns-nameserver 167.205.22.123
+neutron router-interface-add router1 private_subnet
+neutron net-create public --router:external=True
+neutron subnet-create public 167.205.65.0/25 --name public_subnet  --disable-dhcp --gateway 167.205.65.5 --allocation_pool start=167.205.65.110,end=167.205.65.115
+neutron router-gateway-set router1 public
+```
+Dengan perintah di atas akan dibuat konfigurasi network public (untuk floating IP), network private (untuk fixed network) dan router1 untuk me-routing-kan network private ke network public.
+
+Selanjutnya hubungkan machine yang menjalankan devstack menggunakan NIC eth1 sebagai port untuk network instance yang terhubung lewat switch OVS dengan bridge bernama br-ex, karena itu kita perlu menambahkan interface bridge br-ex di mesin devstack
+```
+sudo ovs-vsctl add-br br-ex
+sudo ovs-vsctl add-port br-ex eth1
+```
+selain itu kita perlu mengganti konfigurasi /etc/network/interfaces menjadi :
+```
+auto eth1
+iface eth1 inet manual
+        up ifconfig $IFACE 0.0.0.0 up
+        up ip link set $IFACE promisc on
+        down ip link set $IFACE promisc off
+        down ifconfig $IFACE 0.0.0.0 down
+
+auto br-ex
+iface br-ex inet static
+        address 167.205.65.61
+        netmask 255.255.255.128
+        network 167.205.65.0
+        broadcast 167.205.65.127
+        up ip link set $IFACE promisc on
+        down ip link set $IFACE promisc off
+
+up route add -net 167.205.0.0/16 gw 167.205.65.5 dev br-ex
+```
+Restart konfigurasi network di ubuntu 14.04 menggunakan perintah :
+```
+sudo ifdown eth1
+sudo ifup eth1
+sudo ifup br-ex
+```
+
+Untuk memverifikasi network instance dapat terhubung ke jaringan luar, periksa konfigurasi IP namespace router1, sebelumnya update firewall di OpenStack mengizinkan semua trafik SSH dan ICMP keluar dan ke dalam network OpenStack
+```
+source devstack/openrc admin admin
+neutron security-group-rule-create --protocol icmp --direction ingress default
+neutron security-group-rule-create --protocol tcp --port-range-min 22 --port-range-max 22 --direction ingress default
+```
+Cek ID dari router1
+
+```
+source ~stack/devstack/openrc admin admin
+neutron router-list
+
++--------------------------------------+---------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------+-------+
+| id                                   | name    | external_gateway_info                                                                                                                                                                      | distributed | ha    |
++--------------------------------------+---------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------+-------+
+| 9533d1e6-5e33-45d1-9fbc-63222e618235 | router1 | {"network_id": "6c49924e-7e62-45c7-bc86-763db2e92365", "enable_snat": true, "external_fixed_ips": [{"subnet_id": "c0c13c0a-2120-4a47-afb3-468dd7218fc5", "ip_address": "167.205.65.110"}]} | False       | False |
++--------------------------------------+---------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------+-------+
+```
+Terlihat ID dari router1 adalah 9533d1e6-5e33-45d1-9fbc-63222e618235, kemudian cek IP namespace router 1 dan lakukan ping dari interface private/public router1 ke IP di network lain.
+```
+sudo ip netns
+ qdhcp-6522799f-62eb-4649-b9c6-d7df57c873fb
+ qrouter-9533d1e6-5e33-45d1-9fbc-63222e618235
+ qrouter-a6934302-2a19-4098-94c0-13907bd2d7fc
+sudo ip netns exec qrouter-9533d1e6-5e33-45d1-9fbc-63222e618235 ip addr
+...
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host
+       valid_lft forever preferred_lft forever
+15: qr-3bbaa703-cc: <BROADCAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UNKNOWN group default
+    link/ether fa:16:3e:f1:40:a2 brd ff:ff:ff:ff:ff:ff
+    inet 192.168.1.1/24 brd 192.168.1.255 scope global qr-3bbaa703-cc
+       valid_lft forever preferred_lft forever
+    inet6 fe80::f816:3eff:fef1:40a2/64 scope link
+       valid_lft forever preferred_lft forever
+16: qg-1c089119-e9: <BROADCAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UNKNOWN group default
+    link/ether fa:16:3e:b6:10:53 brd ff:ff:ff:ff:ff:ff
+    inet 167.205.65.110/25 brd 167.205.65.127 scope global qg-1c089119-e9
+       valid_lft forever preferred_lft forever
+    inet6 fe80::f816:3eff:feb6:1053/64 scope link
+       valid_lft forever preferred_lft forever
+...
+sudo ip netns exec qrouter-9533d1e6-5e33-45d1-9fbc-63222e618235 ping -s 167.205.65.61 167.205.65.5
+PING 167.205.65.5 (167.205.65.5) 56(84) bytes of data.
+64 bytes from 167.205.65.5: icmp_seq=1 ttl=64 time=0.641 ms
+64 bytes from 167.205.65.5: icmp_seq=2 ttl=64 time=0.558 ms
+^C
+--- 167.205.65.5 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 999ms
+rtt min/avg/max/mdev = 0.558/0.599/0.641/0.048 ms
+
+sudo ip netns exec qrouter-9533d1e6-5e33-45d1-9fbc-63222e618235 ping -S 192.168.1.1 167.205.65.5
+PING 167.205.65.5 (167.205.65.5) 56(84) bytes of data.
+64 bytes from 167.205.65.5: icmp_seq=1 ttl=64 time=0.601 ms
+64 bytes from 167.205.65.5: icmp_seq=2 ttl=64 time=11.9 ms
+^C
+--- 167.205.65.5 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1001ms
+rtt min/avg/max/mdev = 0.601/6.287/11.974/5.687 ms
+
+```
+
+Catatan : jika anda menggunakan virtual machine untuk menjalankan devstack (vmware/virtualbox/kvm) pastikan virtual switch yang digunakan menerima paket promiscious, jika tidak maka instance hanya dapat terhubung ke network private.
+
+### Menambahkan keypair
+Keypair di OpenStack pada dasarnya merupakan public key yang dapat digunakan user untuk mengakses instance/virtual machine di OpenStack, selain dapat menggunakan user & password. Pada image-image OS yang dibuat khusus untuk OpenStack pada umumnya user hanya dapat mengakses (lewat SSH) ke instance menggunakan keypair/public key nya, sehingga kita perlu menambahkan informasi keypair baru untuk user dari command line, misalnya dengan perintah :
+```
+source devstack/openrc admin admin
+PASSWORD=passwordnya
+TENANT=admin
+USERNAME=ady
+ROLE=admin
+
+keystone tenant-create --name $TENANT
+keystone user-create --name $USERNAME --pass $PASSWORD
+keystone user-role-add --user $USERNAME --role $ROLE --tenant $TENANT
+ssh-keygen -t rsa -f $USERNAME
+nova keypair-add --pub-key $USERNAME.pub $USERNAME
+nova keypair-list
+
++------+-------------------------------------------------+
+| Name | Fingerprint                                     |
++------+-------------------------------------------------+
+| ady  | 0e:ee:8b:79:69:28:43:fa:58:ac:a8:05:6c:c5:61:24 |
++------+-------------------------------------------------+
+administrator@devstack:~$
+```
+
+Perintah-perintah di atas akan membuat user bernama ady, public key dengan nama ady.pub dan menambahkan public key ady.pub sebagai keypair untuk user ady. Selain itu dapat juga dilakukan melalui Horizon.
+Untuk login ke instance menggunakan SSH dan public key yang telah dibuat gunakan perintah berikut :
+```
+ssh -i ady.pub IP-floating_instance
+```
+### Meluncurkan instance
+Via Horizon
+### Menambahkan floating IP ke instance
+Via Horizon
+
+#Bersambung ...
+* Pengenalan interface Horizon
+* Neutron lebih dalam
+* Metode Deployment OpenStack menggunakan RDO
+Bersambung ...
